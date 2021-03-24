@@ -1,0 +1,320 @@
+import pygame
+import os
+import time
+import random
+import matplotlib.pyplot as plt
+import numpy as np
+import statistics
+from time import time
+
+# Model parameters
+FOOD_DROP = 10
+FOOD_POWER = 20
+FOOD_INTERVAL = 3  # seconds between drops
+HUNGER_BYTIME = 2/10
+DEFAULT_HUNGRY_SWITCH = 70
+MAXSPEED = 10
+MATE_INTERVAL = 3  # seconds between drops
+FEMALE_MATE_COST = 20
+MALE_MATE_COST = 10
+BIRTH_RAD = 5
+STARTING_MALES = 5
+STARTING_FEMALES = 5
+
+# Images - make sure to add some nice sprites, see zip file for examples
+MUSHROOM = pygame.transform.scale(pygame.image.load(os.path.join('mushroom.png')), (15,15))
+STICKMAN = pygame.transform.scale(pygame.image.load(os.path.join('stickman.png')), (15,15))
+STICKWOMAN = pygame.transform.scale(pygame.image.load(os.path.join('stickwoman.png')), (30,30))
+
+
+# Constants
+END = 60  # minute long iteration
+WIDTH, HEIGHT = 500, 500
+GREEN = (20, 255, 140)
+GREY = (210, 210, 210)
+WHITE = (255, 255, 255)
+RED = (255, 0, 0)
+PURPLE = (255, 0, 255)
+pygame.font.init()
+WIN = pygame.display.set_mode((WIDTH, HEIGHT))
+MAX_POSSIBLE_DIST = (WIDTH**2+HEIGHT**2)**(1/2)
+pygame.display.set_caption('EvoSim')
+
+ID_history = [0]
+frame_list = []
+pop_size = []
+av_efficiency_list = []
+av_effstd_list = []
+
+def IDgen():
+    IDnum = ID_history[-1]+1
+    ID_history.append(IDnum)
+    return str(IDnum)
+
+def x_gen():
+    return random.randint(0,WIDTH)
+
+def y_gen():
+    return random.randint(0,HEIGHT)
+
+class Object(pygame.sprite.Sprite):
+    def __init__(self, colour, w, h, x, y):
+        pygame.sprite.Sprite.__init__(self)
+        self.ID = IDgen()
+        self.image = pygame.Surface([w, h])
+        self.image.fill(colour)
+        self.rect = self.image.get_rect()
+        self.rect.x = x
+        self.rect.y = y
+
+class Food(Object):
+    def __init__(self, x, y):
+        super().__init__(GREEN,10,10, x, y)
+        self.image = MUSHROOM
+
+FoodGroup = pygame.sprite.Group()
+
+# populate field with food
+def FoodDrop(frame, interval,amount):
+    if frame % interval ==0:
+        for i in range(0,amount):
+            testFood = Food(x_gen(),y_gen())
+            FoodGroup.add(testFood)
+
+class Animal(Object):
+    def __init__(self, x, y, min_eff=0, max_eff=100):
+        super().__init__(GREEN, 10, 10, x, y)
+        self.image = STICKMAN
+        self.hunger = 0
+        self.hungry = 0
+        self.hungry_switch = DEFAULT_HUNGRY_SWITCH
+        self.efficiency = random.randint(0,100)
+        self.effstd = random.randint(0,100)
+
+class Male(Animal):
+    def __init__(self, x, y, min_eff=0, max_eff=100):
+        super().__init__(x, y)
+        self.image = STICKMAN
+        self.efficiency = random.randint(min_eff,max_eff)
+        AnimalGroup.add(self)
+        MaleGroup.add(self)
+
+class Female(Animal):
+    def __init__(self, x, y,  min_eff=0, max_eff=100):
+        super().__init__(x, y)
+        self.image = STICKWOMAN
+        self.hunger = 0
+        self.efficiency = random.randint(min_eff,max_eff)
+        self.time_to_fertile = 0
+        AnimalGroup.add(self)
+        FemaleGroup.add(self)
+
+AnimalGroup = pygame.sprite.Group()
+MaleGroup = pygame.sprite.Group()
+FemaleGroup = pygame.sprite.Group()
+
+for i in range(0, STARTING_MALES):
+    testMan = Male(x_gen(), y_gen())
+    AnimalGroup.add(testMan)
+    MaleGroup.add(testMan)
+for i in range(0, STARTING_FEMALES):
+    testWoman = Female(x_gen(), y_gen())
+    AnimalGroup.add(testWoman)
+    FemaleGroup.add(testWoman)
+
+
+# distance between origin and target object
+def distance(origin_obj, dest_obj):
+    xdiff = dest_obj.rect.x - origin_obj.rect.x
+    ydiff = dest_obj.rect.y - origin_obj.rect.y
+    result = (xdiff**2 + ydiff**2)**(1/2)
+    return result
+
+# create dictionary of distance between origin and every object in list
+def distance_dic(origin_obj, sprite_group):
+    dic = {}
+    for sprite in sprite_group:
+        dic[sprite.ID] = distance(origin_obj, sprite)
+    return dic
+
+# return sprite object with lowest distance to origin object
+def closest_sprite(origin_obj, sprite_group):
+    lowest_dist = MAX_POSSIBLE_DIST  # upper bound
+    lowest_key = 0  # dummy
+    result = origin_obj  # dummy
+    dic = distance_dic(origin_obj, sprite_group)
+    for key in dic.keys():
+        if dic[key] < lowest_dist:
+            lowest_dist = dic[key]
+            lowest_key = key
+    for sprite in sprite_group:
+        if sprite.ID == lowest_key:
+            result = sprite
+            break
+    return result
+
+# return change in coordinate to move from origin to destination, capped by speed parameter
+def proposed_move(maxspeed, origin_obj, dest_obj):
+    change_x = dest_obj.rect.x - origin_obj.rect.x
+    change_y = dest_obj.rect.y - origin_obj.rect.y
+    # create speed limiter
+    max_dist = 5
+    total_dist = distance(origin_obj, dest_obj)
+    if max_dist < total_dist:
+        speed_limiter = max_dist/total_dist
+    else:
+        speed_limiter = 1
+    change_x = change_x * speed_limiter
+    change_y = change_y * speed_limiter
+    return change_x, change_y
+
+# hunger cost for movement
+def movecost(distance, efficiency):
+    cost = distance / efficiency
+    return cost
+
+
+# Move animal toward closest in Group
+def move2closest(Sprite, Group):
+    animal_change_x, animal_change_y = proposed_move(MAXSPEED, Sprite, closest_sprite(Sprite, Group))
+    return animal_change_x, animal_change_y
+
+#Group of animals move towards closest food if hungry, otherwise move towards mate
+def moves(AnimalGroup,MaleGroup,FemaleGroup,FoodGroup):
+    for animal in AnimalGroup:
+        animal_change_x, animal_change_y = 0,0
+        if animal.hunger >= animal.hungry_switch:
+            animal.hungry = 1
+        if animal.hungry == 1:
+            targetGroup = FoodGroup
+        elif animal in MaleGroup:
+            targetGroup = FemaleGroup
+        elif animal in FemaleGroup:
+            targetGroup = MaleGroup
+        animal_change_x, animal_change_y = move2closest(animal,targetGroup)
+        animal.rect.x += animal_change_x
+        animal.rect.y += animal_change_y
+        animal.hunger += movecost((animal_change_x**2+animal_change_y**2)**(1/2),animal.efficiency)
+        #animal dies if too hungry
+        if animal.hunger >=100:
+            animal.kill()
+
+#food is eaten
+def eat(AnimalGroup, FoodGroup):
+    dic = pygame.sprite.groupcollide(AnimalGroup, FoodGroup, False, True)
+    v_list = list(dic.values())
+    for animal in dic.keys():
+        #count number of animals at food and divide food between them
+        rivals = v_list.count(dic[animal])
+        animal.hunger += -FOOD_POWER / rivals
+
+#mating function, no special inheritances
+def mate(FemaleGroup,MaleGroup):
+    for f in FemaleGroup:
+        if f.time_to_fertile > 0:
+            f.time_to_fertile += -1
+    dic = pygame.sprite.groupcollide(FemaleGroup,MaleGroup,False,False)
+    for f in dic.keys():
+        for m in dic[f]:
+            if f.time_to_fertile ==0 and f.efficiency>=m.effstd and m.efficiency>=f.effstd:
+                f.time_to_fertile = 60*MATE_INTERVAL
+                sex = random.choice(['M','F'])
+                child_x = random.randint(f.rect.x - BIRTH_RAD, f.rect.x + BIRTH_RAD)
+                child_y = random.randint(f.rect.y - BIRTH_RAD, f.rect.y + BIRTH_RAD)
+                if sex == 'M':
+                    Male(child_x,child_y,min(m.efficiency,f.efficiency),max(m.efficiency,f.efficiency))
+                else:
+                    Female(child_x,child_y,min(m.efficiency,f.efficiency),max(m.efficiency,f.efficiency))
+                f.hunger += FEMALE_MATE_COST
+                m.hunger += MALE_MATE_COST
+
+#cost over time
+def timecost():
+    for animal in AnimalGroup:
+        animal.hunger += HUNGER_BYTIME
+
+#count number of animals
+def count_animals(Group):
+    n = 0
+    for g in Group:
+        n += 1
+    return n
+
+def average_efficiency(Group):
+    efflist = []
+    for g in Group:
+        efflist.append(g.efficiency)
+    if efflist == []:
+        mean = 0
+    else:
+        mean = statistics.mean(efflist)
+    return mean
+def average_effstd(Group):
+    stdlist = []
+    for g in Group:
+        stdlist.append(g.effstd)
+    if stdlist == []:
+        mean = 0
+    else:
+       mean = statistics.mean(stdlist)
+    return mean
+
+# plot population size over time
+def plot_results(F,P,E,A):
+    f = np.array(F)
+    p = np.array(P)
+    plt.subplot(1,2,1)
+    plt.plot(f,p)
+    plt.xlabel("Seconds")
+    plt.title('Population')
+
+    e = np.array(E)
+    a = np.array(A)
+    plt.subplot(1, 2, 2)
+    plt.plot(f,e, label = 'Avg Efficiency')
+    plt.plot(f,a, 'b', label = 'Avg Eff Std')
+    plt.title('Efficiency')
+    plt.legend()
+    plt.show()
+
+def main():
+    run = True
+    FPS = 60
+    frame = 0
+    main_font = pygame.font.SysFont('comicsans',20)
+    clock = pygame.time.Clock()
+
+    def redraw_window():
+        WIN.fill((0,0,0))
+        frame_label = main_font.render(f'Frame: {frame}',1, (255,255,255))
+
+        WIN.blit(frame_label, (10,10))
+        AnimalGroup.draw(WIN)
+        FoodGroup.draw(WIN)
+
+        # model movements
+        FoodDrop(frame,(60*FOOD_INTERVAL),FOOD_DROP)
+        moves(AnimalGroup, MaleGroup, FemaleGroup, FoodGroup)
+        eat(AnimalGroup, FoodGroup)
+        mate(FemaleGroup,MaleGroup)
+        timecost()
+        pop_size.append(count_animals(AnimalGroup))
+        av_efficiency_list.append(average_efficiency(AnimalGroup))
+        av_effstd_list.append(average_effstd(AnimalGroup))
+
+        pygame.display.update()
+
+    while run:
+        clock.tick(FPS)
+        frame += 1
+        frame_list.append(round(frame/60, 2))
+        redraw_window()
+        if frame == 60 * END:
+            run = False
+
+        for event in pygame.event.get():
+            if event.type ==pygame.QUIT:
+                run = False
+
+main()
+plot_results(frame_list, pop_size, av_efficiency_list, av_effstd_list)
